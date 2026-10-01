@@ -334,6 +334,22 @@ int main(int argc, char* argv[]) {
 #endif
 
 #ifdef ENABLE_BACHATA_RUNTIME
+#ifdef __linux__
+    {
+        std::error_code ec;
+        const std::filesystem::path dump_dir =
+            "/sdcard/Android/data/com.bachatas4.android.github/files";
+        std::filesystem::create_directories(dump_dir, ec);
+        std::ofstream dump(dump_dir / "bachata-argv.txt", std::ios::app);
+        if (dump) {
+            for (int i = 0; i < argc; ++i) {
+                dump << argv[i] << '\n';
+            }
+            dump << "----\n";
+        }
+    }
+#endif
+
     // Android always supplies an absolute eboot path. Reject malformed content before
     // IPC, settings, SDL, or X11 initialization can block the managed session.
     if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
@@ -356,22 +372,6 @@ int main(int argc, char* argv[]) {
     Common::Log::Setup("shadps4.log");
 
     LOG_INFO(Debug, "Run: {}", std::span(argv, argc));
-
-#ifdef __linux__
-    {
-        std::error_code ec;
-        const std::filesystem::path dump_dir =
-            "/sdcard/Android/data/com.bachatas4.android.github/files";
-        std::filesystem::create_directories(dump_dir, ec);
-        std::ofstream dump(dump_dir / "bachata-argv.txt", std::ios::app);
-        if (dump) {
-            for (int i = 0; i < argc; ++i) {
-                dump << argv[i] << '\n';
-            }
-            dump << "----\n";
-        }
-    }
-#endif
 
     IPC::Instance().Init();
 
