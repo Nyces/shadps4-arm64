@@ -6,6 +6,7 @@
 #include "core/file_sys/devices/logger.h"
 #include "core/file_sys/devices/nop_device.h"
 #include "core/file_sys/fs.h"
+#include "core/file_sys/saf_fs_backend.h"
 
 namespace Core::FileSys {
 
@@ -25,6 +26,16 @@ void MntPoints::Mount(const std::filesystem::path& host_folder, const std::strin
     std::scoped_lock lock{m_mutex};
     const auto guest_folder_sanitized = RemoveTrailingSlashes(guest_folder);
     m_mnt_pairs.emplace_back(host_folder, guest_folder_sanitized, read_only);
+}
+
+void MntPoints::MountSaf(std::shared_ptr<SafFsBackend> backend, const std::string& guest_folder) {
+    std::scoped_lock lock{m_mutex};
+    const auto guest_folder_sanitized = RemoveTrailingSlashes(guest_folder);
+    MntPair pair{};
+    pair.mount = guest_folder_sanitized;
+    pair.read_only = true;
+    pair.saf = std::move(backend);
+    m_mnt_pairs.emplace_back(std::move(pair));
 }
 
 void MntPoints::Unmount(const std::filesystem::path& host_folder, const std::string& guest_folder) {
@@ -64,6 +75,9 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
     }
 
     const auto corrected_path_sanitized = RemoveTrailingSlashes(corrected_path);
+    if (mount->saf) {
+        return mount->saf->Resolve(corrected_path_sanitized);
+    }
     std::filesystem::path host_path = mount->host_path;
 
     // Update folder is either mount + "-UPDATE" or mount + "-patch"
@@ -194,6 +208,13 @@ std::filesystem::path MntPoints::GetHostPath(std::string_view path, bool* is_rea
 // TODO: Does not handle mount points inside mount points.
 void MntPoints::IterateDirectory(std::string_view guest_directory,
                                  const IterateDirectoryCallback& callback) {
+    const auto guest_sanitized = RemoveTrailingSlashes(std::string{guest_directory});
+    const auto mount = GetMount(guest_sanitized);
+    if (mount && mount->saf) {
+        mount->saf->Iterate(guest_sanitized, callback);
+        return;
+    }
+
     const auto base_path = GetHostPath(guest_directory, nullptr, HostPathType::Base);
 
     // Forces path types so as not to resolve to base path

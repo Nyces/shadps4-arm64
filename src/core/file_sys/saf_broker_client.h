@@ -1,0 +1,48 @@
+// SPDX-FileCopyrightText: Copyright 2025 shadPS4 Emulator Project
+// SPDX-License-Identifier: GPL-2.0-or-later
+
+#pragma once
+
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "common/types.h"
+
+namespace Core::FileSys {
+
+struct SafEntry {
+    std::string name;
+    bool is_directory{};
+    u64 size{};
+    u64 mtime{};
+};
+
+class SafBrokerClient {
+public:
+    SafBrokerClient() = default;
+    SafBrokerClient(std::string socket_name, std::string token);
+    ~SafBrokerClient();
+
+    SafBrokerClient(const SafBrokerClient&) = delete;
+    SafBrokerClient& operator=(const SafBrokerClient&) = delete;
+    SafBrokerClient(SafBrokerClient&& other) noexcept;
+    SafBrokerClient& operator=(SafBrokerClient&& other) noexcept;
+
+    bool IsValid() const {
+        return !socket_name.empty() && !token.empty();
+    }
+
+    bool Stat(std::string_view guest_path, SafEntry& out) const;
+    bool ReadDir(std::string_view guest_path, std::vector<SafEntry>& out) const;
+    int Open(std::string_view guest_path) const;
+
+private:
+    bool Transact(u8 opcode, std::string_view path, bool want_fd, std::vector<u8>& payload,
+                  int& out_fd) const;
+
+    std::string socket_name;
+    std::string token;
+};
+
+} // namespace Core::FileSys

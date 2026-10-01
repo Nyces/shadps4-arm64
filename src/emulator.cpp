@@ -32,6 +32,7 @@
 #include "core/file_format/psf.h"
 #include "core/file_format/trp.h"
 #include "core/file_sys/fs.h"
+#include "core/file_sys/saf_fs_backend.h"
 #include "core/libraries/kernel/kernel.h"
 #include "core/libraries/libs.h"
 #include "core/libraries/np/np_trophy.h"
@@ -218,9 +219,21 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     // Applications expect to be run from /app0 so mount the file's parent path as app0.
     auto* mnt = Common::Singleton<Core::FileSys::MntPoints>::Instance();
-    mnt->Mount(game_folder, "/app0", true);
-    // Certain games may use /hostapp as well such as CUSA001100
-    mnt->Mount(game_folder, "/hostapp", true);
+    if (!Core::FileSys::g_saf_socket.empty() && !Core::FileSys::g_saf_token.empty()) {
+        auto saf_client = std::make_shared<Core::FileSys::SafBrokerClient>(
+            Core::FileSys::g_saf_socket, Core::FileSys::g_saf_token);
+        const auto mirror_root = std::filesystem::temp_directory_path() / "bachata-saf";
+        mnt->MountSaf(std::make_shared<Core::FileSys::SafFsBackend>(saf_client, "/app0",
+                                                                   mirror_root / "app0"),
+                      "/app0");
+        mnt->MountSaf(std::make_shared<Core::FileSys::SafFsBackend>(saf_client, "/hostapp",
+                                                                   mirror_root / "hostapp"),
+                      "/hostapp");
+    } else {
+        mnt->Mount(game_folder, "/app0", true);
+        // Certain games may use /hostapp as well such as CUSA001100
+        mnt->Mount(game_folder, "/hostapp", true);
+    }
 
     const auto param_sfo_path = mnt->GetHostPath("/app0/sce_sys/param.sfo");
     const auto param_sfo_exists = std::filesystem::exists(param_sfo_path);

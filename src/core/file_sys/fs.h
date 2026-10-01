@@ -4,6 +4,7 @@
 #pragma once
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -22,6 +23,8 @@ struct Resolver;
 
 namespace Core::FileSys {
 
+class SafFsBackend;
+
 class MntPoints {
 #ifdef _WIN64
     static constexpr bool NeedsCaseInsensitiveSearch = false;
@@ -34,6 +37,7 @@ public:
         std::filesystem::path host_path;
         std::string mount; // e.g /app0
         bool read_only;
+        std::shared_ptr<SafFsBackend> saf;
     };
 
     enum class HostPathType {
@@ -48,6 +52,7 @@ public:
 
     void Mount(const std::filesystem::path& host_folder, const std::string& guest_folder,
                bool read_only = false);
+    void MountSaf(std::shared_ptr<SafFsBackend> backend, const std::string& guest_folder);
     void Unmount(const std::filesystem::path& host_folder, const std::string& guest_folder);
     void UnmountAll();
 

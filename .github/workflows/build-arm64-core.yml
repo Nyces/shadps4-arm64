@@ -9,6 +9,9 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/build-arm64-core.yml"
+      - "CMakeLists.txt"
+      - "src/**"
+      - "runtime/**"
 
 permissions:
   contents: read

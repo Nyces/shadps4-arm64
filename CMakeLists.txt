@@ -917,6 +917,10 @@ set(CORE src/core/aerolib/stubs.cpp
          src/core/file_format/npbind.h
          src/core/file_sys/fs.cpp
          src/core/file_sys/fs.h
+         src/core/file_sys/saf_broker_client.cpp
+         src/core/file_sys/saf_broker_client.h
+         src/core/file_sys/saf_fs_backend.cpp
+         src/core/file_sys/saf_fs_backend.h
          src/core/ipc/ipc.cpp
          src/core/ipc/ipc.h
          src/core/loader/dwarf.cpp

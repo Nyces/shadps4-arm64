@@ -20,6 +20,7 @@
 #include "core/emulator_settings.h"
 #include "core/emulator_state.h"
 #include "core/file_sys/fs.h"
+#include "core/file_sys/saf_fs_backend.h"
 #include "core/ipc/ipc.h"
 #include "core/loader/elf.h"
 #include "core/user_settings.h"
@@ -212,6 +213,8 @@ int main(int argc, char* argv[]) {
     std::optional<std::filesystem::path> bachataSocket;
     std::optional<std::filesystem::path> bachataStorageRoot;
     std::optional<std::filesystem::path> patchSessionPath;
+    std::optional<std::string> bachataSafSocket;
+    std::optional<std::string> bachataSafToken;
 #endif
     std::optional<int> waitPid;
     bool waitForDebugger = false;
@@ -246,6 +249,9 @@ int main(int argc, char* argv[]) {
         ->check(CLI::ExistingDirectory);
     app.add_option("--patch-session", patchSessionPath,
                    "Managed patch launch session file (frozen snapshot staged by Android)");
+    app.add_option("--bachata-saf-socket", bachataSafSocket,
+                   "Android SAF broker abstract socket name");
+    app.add_option("--bachata-saf-token", bachataSafToken, "Android SAF broker session token");
 #endif
 
     app.add_flag("--wait-for-debugger", waitForDebugger);
@@ -315,6 +321,14 @@ int main(int argc, char* argv[]) {
             return 1;
         }
         MemoryPatcher::g_managed_session_path = *patchSessionPath;
+    }
+    if (bachataSafSocket.has_value() != bachataSafToken.has_value()) {
+        std::cerr << "SAF launch requires both broker socket and token\n";
+        return 1;
+    }
+    if (bachataSafSocket.has_value()) {
+        Core::FileSys::g_saf_socket = *bachataSafSocket;
+        Core::FileSys::g_saf_token = *bachataSafToken;
     }
 #endif
 
