@@ -9,13 +9,6 @@
 #include <memory>
 #include <optional>
 #include <vector>
-
-#ifdef __linux__
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
 #include <CLI/CLI.hpp>
 #include <SDL3/SDL_messagebox.h>
 
@@ -341,27 +334,14 @@ int main(int argc, char* argv[]) {
 #endif
 
 #ifdef ENABLE_BACHATA_RUNTIME
-#ifdef __linux__
     {
-        const int dbg_sock = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (dbg_sock >= 0) {
-            sockaddr_in dbg_addr{};
-            dbg_addr.sin_family = AF_INET;
-            dbg_addr.sin_port = htons(9999);
-            dbg_addr.sin_addr.s_addr = htonl(0x7F000001u);
-            if (::connect(dbg_sock, reinterpret_cast<sockaddr*>(&dbg_addr), sizeof(dbg_addr)) == 0) {
-                std::string dbg_msg = "ARGV\n";
-                for (int i = 0; i < argc; ++i) {
-                    dbg_msg += argv[i];
-                    dbg_msg += '\n';
-                }
-                dbg_msg += "----\n";
-                ::send(dbg_sock, dbg_msg.data(), dbg_msg.size(), 0);
-            }
-            ::close(dbg_sock);
+        std::string dbg_args = "DBGARGS";
+        for (int i = 0; i < argc; ++i) {
+            dbg_args += "|";
+            dbg_args += argv[i];
         }
+        runtime_client.SendError(dbg_args);
     }
-#endif
 
     // Android always supplies an absolute eboot path. Reject malformed content before
     // IPC, settings, SDL, or X11 initialization can block the managed session.
