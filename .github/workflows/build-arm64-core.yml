@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: 2026 shadPS4 Emulator Project
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+name: Build ARM64 Core
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-arm64-core.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arm64-core-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEBIAN_IMAGE: debian:trixie
+
+jobs:
+  core:
+    name: Cross-compile shadps4 (aarch64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout repository with submodules
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Build ARM64 core inside Debian trixie container
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w /workspace \
+            "${DEBIAN_IMAGE}" \
+            bash -c '
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends git ca-certificates
+              git config --global --add safe.directory "*"
+              runtime/scripts/install-debian-runtime-deps.sh
+              runtime/scripts/build-shadps4-arm64.sh
+            '
+
+      - name: Report built binary
+        run: |
+          ls -l runtime/build/shadps4-arm64-stage/bin/shadps4-arm64
+          cat runtime/build/shadps4-arm64-stage/needed.txt
+
+      - name: Upload ARM64 core artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: shadps4-arm64-core
+          path: |
+            runtime/build/shadps4-arm64-stage/bin/shadps4-arm64
+            runtime/build/shadps4-arm64-stage/needed.txt
+          if-no-files-found: error

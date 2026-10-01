@@ -8,11 +8,13 @@ on:
     branches-ignore: [Pre-release-shadPS4-*]
     paths-ignore:
       - "documents/**"
+      - ".github/workflows/**"
       - "**/*.md"
 
   pull_request:
     paths-ignore:
       - "documents/**"
+      - ".github/workflows/**"
       - "**/*.md"
 
   workflow_dispatch:
