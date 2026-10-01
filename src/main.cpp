@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -355,6 +356,22 @@ int main(int argc, char* argv[]) {
     Common::Log::Setup("shadps4.log");
 
     LOG_INFO(Debug, "Run: {}", std::span(argv, argc));
+
+#ifdef __linux__
+    {
+        std::error_code ec;
+        const std::filesystem::path dump_dir =
+            "/sdcard/Android/data/com.bachatas4.android.github/files";
+        std::filesystem::create_directories(dump_dir, ec);
+        std::ofstream dump(dump_dir / "bachata-argv.txt", std::ios::app);
+        if (dump) {
+            for (int i = 0; i < argc; ++i) {
+                dump << argv[i] << '\n';
+            }
+            dump << "----\n";
+        }
+    }
+#endif
 
     IPC::Instance().Init();
 
