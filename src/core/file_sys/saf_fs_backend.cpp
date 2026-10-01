@@ -16,8 +16,9 @@ std::string g_saf_socket;
 std::string g_saf_token;
 
 SafFsBackend::SafFsBackend(std::shared_ptr<SafBrokerClient> c, std::string root,
-                           std::filesystem::path mirror)
-    : client(std::move(c)), guest_root(std::move(root)), mirror_root(std::move(mirror)) {}
+                           std::filesystem::path mirror, std::filesystem::path fallback)
+    : client(std::move(c)), guest_root(std::move(root)), mirror_root(std::move(mirror)),
+      fallback_root(std::move(fallback)) {}
 
 SafFsBackend::~SafFsBackend() {
 #ifdef __linux__
@@ -54,6 +55,23 @@ std::filesystem::path SafFsBackend::MirrorPath(std::string_view guest_path) cons
     return mirror_root / rel;
 }
 
+std::filesystem::path SafFsBackend::FallbackPath(std::string_view guest_path) const {
+    if (fallback_root.empty()) {
+        return {};
+    }
+    std::string rel{guest_path};
+    if (rel.size() >= guest_root.size()) {
+        rel = rel.substr(guest_root.size());
+    }
+    while (!rel.empty() && rel.front() == '/') {
+        rel.erase(rel.begin());
+    }
+    if (rel.empty()) {
+        return fallback_root;
+    }
+    return fallback_root / rel;
+}
+
 int SafFsBackend::AcquireFd(const std::string& guest_path) {
     std::scoped_lock lock{mutex};
     if (const auto it = fd_cache.find(guest_path); it != fd_cache.end()) {
@@ -87,7 +105,16 @@ void SafFsBackend::EvictLocked() {
 }
 
 std::filesystem::path SafFsBackend::Resolve(std::string_view guest_path) {
-    if (!Matches(guest_path) || !client) {
+    if (!Matches(guest_path)) {
+        return {};
+    }
+    std::error_code ec;
+    // Prefer content that the frontend materialized on the real filesystem.
+    const auto fallback = FallbackPath(guest_path);
+    if (!fallback.empty() && std::filesystem::exists(fallback, ec)) {
+        return fallback;
+    }
+    if (!client) {
         return {};
     }
     SafEntry entry;
@@ -95,7 +122,6 @@ std::filesystem::path SafFsBackend::Resolve(std::string_view guest_path) {
         return {};
     }
     const auto mirror = MirrorPath(guest_path);
-    std::error_code ec;
     if (entry.is_directory) {
         std::filesystem::create_directories(mirror, ec);
         return ec ? std::filesystem::path{} : mirror;
@@ -115,7 +141,18 @@ std::filesystem::path SafFsBackend::Resolve(std::string_view guest_path) {
 bool SafFsBackend::Iterate(
     std::string_view guest_path,
     const std::function<void(const std::filesystem::path&, bool)>& callback) {
-    if (!Matches(guest_path) || !client) {
+    if (!Matches(guest_path)) {
+        return false;
+    }
+    std::error_code ec;
+    const auto fallback = FallbackPath(guest_path);
+    if (!fallback.empty() && std::filesystem::is_directory(fallback, ec)) {
+        for (const auto& entry : std::filesystem::directory_iterator(fallback, ec)) {
+            callback(entry.path(), !entry.is_directory(ec));
+        }
+        return true;
+    }
+    if (!client) {
         return false;
     }
     std::vector<SafEntry> entries;

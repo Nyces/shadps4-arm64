@@ -224,10 +224,12 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
             Core::FileSys::g_saf_socket, Core::FileSys::g_saf_token);
         const auto mirror_root = std::filesystem::temp_directory_path() / "bachata-saf";
         mnt->MountSaf(std::make_shared<Core::FileSys::SafFsBackend>(saf_client, "/app0",
-                                                                   mirror_root / "app0"),
+                                                                   mirror_root / "app0",
+                                                                   game_folder),
                       "/app0");
         mnt->MountSaf(std::make_shared<Core::FileSys::SafFsBackend>(saf_client, "/hostapp",
-                                                                   mirror_root / "hostapp"),
+                                                                   mirror_root / "hostapp",
+                                                                   game_folder),
                       "/hostapp");
     } else {
         mnt->Mount(game_folder, "/app0", true);
@@ -312,9 +314,9 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
 
     game_info.game_folder = game_folder;
 
-    if (!std::filesystem::exists(file)) {
+    if (!std::filesystem::exists(eboot_path)) {
         LOG_CRITICAL(Loader, "eboot.bin does not exist: {}",
-                     std::filesystem::absolute(file).string());
+                     std::filesystem::absolute(eboot_path).string());
         std::quick_exit(0);
     }
 

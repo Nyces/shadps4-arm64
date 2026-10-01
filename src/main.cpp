@@ -185,6 +185,47 @@ static void InstallBachataSigsysTrap() {
     sigaction(SIGSYS, &sa, &g_old_sigsys_action);
 }
 
+#ifdef ENABLE_BACHATA_RUNTIME
+namespace {
+std::shared_ptr<Core::FileSys::SafBrokerClient> BachataSafClient() {
+    if (Core::FileSys::g_saf_socket.empty() || Core::FileSys::g_saf_token.empty()) {
+        return nullptr;
+    }
+    return std::make_shared<Core::FileSys::SafBrokerClient>(Core::FileSys::g_saf_socket,
+                                                            Core::FileSys::g_saf_token);
+}
+
+bool BachataIsElf(const std::filesystem::path& path) {
+    if (path.empty() || !std::filesystem::exists(path)) {
+        return false;
+    }
+    Core::Loader::Elf probe;
+    probe.Open(path);
+    return probe.IsElfFile();
+}
+
+// The Android frontend can serve game content either from a real directory tree staged under
+// --override-root ("direct runtime") or through the SAF broker when the content lives on
+// external storage. Returns true when an executable eboot is reachable from either source.
+bool BachataContentReachable(const std::filesystem::path& override_root,
+                             const std::filesystem::path& direct_hint) {
+    if (BachataIsElf(direct_hint)) {
+        return true;
+    }
+    if (!override_root.empty() && BachataIsElf(override_root / "eboot.bin")) {
+        return true;
+    }
+    auto client = BachataSafClient();
+    if (!client) {
+        return false;
+    }
+    const auto mirror = std::filesystem::temp_directory_path() / "bachata-saf-probe";
+    Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
+    return BachataIsElf(backend.Resolve("/app0/eboot.bin"));
+}
+} // namespace
+#endif
+
 int main(int argc, char* argv[]) {
     InstallBachataSigsysTrap();
 #ifdef _WIN32
@@ -334,13 +375,77 @@ int main(int argc, char* argv[]) {
 #endif
 
 #ifdef ENABLE_BACHATA_RUNTIME
+    // The Android frontend launches `-g eboot.bin --override-root <game dir>`: the game path is
+    // relative to the managed override root, so resolve it before any host filesystem probe.
+    if (gamePath.has_value() && !std::filesystem::path(*gamePath).is_absolute() &&
+        overrideRoot.has_value()) {
+        *gamePath = (*overrideRoot / *gamePath).string();
+    }
+
+    // Content can come from the direct runtime folder or the SAF broker. Validate that an
+    // executable eboot is reachable before IPC, settings, SDL or X11 initialization can block
+    // the managed session, otherwise the frontend hangs waiting for a runtime event.
+    bool bachata_content_validated = false;
+    if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
+        const std::filesystem::path early_eboot_path(*gamePath);
+        if (!BachataContentReachable(overrideRoot.value_or(std::filesystem::path{}),
+                                     early_eboot_path)) {
+            std::cerr << "Invalid PS4 executable: " << early_eboot_path << '\n';
+            runtime_client.SendError("CONTENT_INVALID");
+            runtime_client.SendStopped(1);
+            return 1;
+        }
+        bachata_content_validated = true;
+    }
+
     {
         std::string dbg_args = "DBGARGS\n";
+        std::error_code ec;
+        dbg_args += "cwd\n";
+        dbg_args += std::filesystem::current_path(ec).string();
+        dbg_args += '\n';
+        dbg_args += "override_root\n";
+        dbg_args += overrideRoot.has_value() ? overrideRoot->string() : std::string{"<none>"};
+        dbg_args += '\n';
         for (int i = 0; i < argc; ++i) {
             dbg_args += argv[i];
             dbg_args += '\n';
         }
         dbg_args += "----\n";
+        if (overrideRoot.has_value()) {
+            dbg_args += "override_root_listing\n";
+            std::error_code lec;
+            for (const auto& entry : std::filesystem::directory_iterator(*overrideRoot, lec)) {
+                dbg_args += entry.path().filename().string();
+                dbg_args += entry.is_directory(lec) ? "/\n" : "\n";
+            }
+            dbg_args += "----\n";
+            dbg_args += "direct_eboot\n";
+            dbg_args += ((*overrideRoot / "eboot.bin").string());
+            dbg_args += BachataIsElf(*overrideRoot / "eboot.bin") ? " elf\n" : " missing\n";
+        }
+        if (auto client = BachataSafClient()) {
+            dbg_args += "saf_probe\n";
+            Core::FileSys::SafEntry st{};
+            const char* probes[] = {"/app0", "/app0/eboot.bin", "/eboot.bin",
+                                    "/app0/sce_sys/param.sfo"};
+            for (const char* probe : probes) {
+                const bool ok = client->Stat(probe, st);
+                dbg_args += probe;
+                dbg_args += ok ? (st.is_directory ? " DIR size=" : " FILE size=") : " FAIL";
+                if (ok) {
+                    dbg_args += std::to_string(st.size);
+                }
+                dbg_args += '\n';
+            }
+            const auto mirror = std::filesystem::temp_directory_path() / "bachata-saf-probe";
+            Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
+            const auto resolved = backend.Resolve("/app0/eboot.bin");
+            dbg_args += "saf_resolved\n";
+            dbg_args += resolved.empty() ? std::string{"<none>"} : resolved.string();
+            dbg_args += '\n';
+            dbg_args += "----\n";
+        }
         const char* dbg_dirs[] = {
             "/sdcard/Download",
             "/storage/emulated/0/Download",
@@ -349,8 +454,8 @@ int main(int argc, char* argv[]) {
             "/data/local/tmp",
         };
         for (const char* dir : dbg_dirs) {
-            std::error_code ec;
-            std::filesystem::create_directories(dir, ec);
+            std::error_code dec;
+            std::filesystem::create_directories(dir, dec);
             std::ofstream dump(std::string(dir) + "/bachata-argv.txt", std::ios::app);
             if (dump) {
                 dump << dbg_args;
@@ -359,20 +464,6 @@ int main(int argc, char* argv[]) {
         std::ofstream cwd_dump("bachata-argv.txt", std::ios::app);
         if (cwd_dump) {
             cwd_dump << dbg_args;
-        }
-    }
-
-    // Android always supplies an absolute eboot path. Reject malformed content before
-    // IPC, settings, SDL, or X11 initialization can block the managed session.
-    if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
-        const std::filesystem::path early_eboot_path(*gamePath);
-        Core::Loader::Elf executable;
-        executable.Open(early_eboot_path);
-        if (!std::filesystem::exists(early_eboot_path) || !executable.IsElfFile()) {
-            std::cerr << "Invalid PS4 executable: " << early_eboot_path << '\n';
-            runtime_client.SendError("CONTENT_INVALID");
-            runtime_client.SendStopped(1);
-            return 1;
         }
     }
 #endif
@@ -484,7 +575,14 @@ int main(int argc, char* argv[]) {
 
     // ---- Resolve game path or ID ----
     std::filesystem::path ebootPath(*gamePath);
-    if (!std::filesystem::exists(ebootPath)) {
+#ifdef ENABLE_BACHATA_RUNTIME
+    // Content was already validated (possibly through the SAF broker) before initialization,
+    // so skip the host-filesystem probes that would reject broker-backed paths.
+    const bool bachata_skip_disk_checks = bachata_content_validated;
+#else
+    constexpr bool bachata_skip_disk_checks = false;
+#endif
+    if (!bachata_skip_disk_checks && !std::filesystem::exists(ebootPath)) {
         bool found = false;
         constexpr int maxDepth = 5;
         for (const auto& installDir : EmulatorSettings.GetGameInstallDirs()) {
@@ -505,13 +603,15 @@ int main(int argc, char* argv[]) {
     }
 
 #ifdef ENABLE_BACHATA_RUNTIME
-    Core::Loader::Elf executable;
-    executable.Open(ebootPath);
-    if (!executable.IsElfFile()) {
-        LOG_ERROR(Debug, "Invalid PS4 executable: {}", ebootPath.string());
-        runtime_client.SendError("CONTENT_INVALID");
-        runtime_client.SendStopped(1);
-        return 1;
+    if (!bachata_skip_disk_checks) {
+        Core::Loader::Elf executable;
+        executable.Open(ebootPath);
+        if (!executable.IsElfFile()) {
+            LOG_ERROR(Debug, "Invalid PS4 executable: {}", ebootPath.string());
+            runtime_client.SendError("CONTENT_INVALID");
+            runtime_client.SendStopped(1);
+            return 1;
+        }
     }
 #endif
 
