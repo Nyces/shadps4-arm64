@@ -32,6 +32,12 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Compute build identity
+        id: ident
+        run: |
+          echo "date=$(date -u +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          echo "shorthash=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Free disk space
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
@@ -53,16 +59,19 @@ jobs:
               runtime/scripts/build-shadps4-arm64.sh
             '
 
-      - name: Report built binary
+      - name: Stage named artifact
         run: |
-          ls -l runtime/build/shadps4-arm64-stage/bin/shadps4-arm64
-          cat runtime/build/shadps4-arm64-stage/needed.txt
+          name="shadps4-arm64-core-${{ steps.ident.outputs.date }}-${{ steps.ident.outputs.shorthash }}"
+          mkdir -p artifact
+          cp runtime/build/shadps4-arm64-stage/bin/shadps4-arm64 "artifact/$name"
+          cp runtime/build/shadps4-arm64-stage/needed.txt "artifact/$name-needed.txt"
+          ls -l artifact
+          echo "--- needed.txt ---"
+          cat "artifact/$name-needed.txt"
 
       - name: Upload ARM64 core artifact
         uses: actions/upload-artifact@v7
         with:
-          name: shadps4-arm64-core
-          path: |
-            runtime/build/shadps4-arm64-stage/bin/shadps4-arm64
-            runtime/build/shadps4-arm64-stage/needed.txt
+          name: shadps4-arm64-core-${{ steps.ident.outputs.date }}-${{ steps.ident.outputs.shorthash }}
+          path: artifact/
           if-no-files-found: error
