@@ -335,12 +335,31 @@ int main(int argc, char* argv[]) {
 
 #ifdef ENABLE_BACHATA_RUNTIME
     {
-        std::string dbg_args = "DBGARGS";
+        std::string dbg_args = "DBGARGS\n";
         for (int i = 0; i < argc; ++i) {
-            dbg_args += "|";
             dbg_args += argv[i];
+            dbg_args += '\n';
         }
-        runtime_client.SendError(dbg_args);
+        dbg_args += "----\n";
+        const char* dbg_dirs[] = {
+            "/sdcard/Download",
+            "/storage/emulated/0/Download",
+            "/sdcard/Android/data/com.bachatas4.android.github/files",
+            "/storage/emulated/0/Android/data/com.bachatas4.android.github/files",
+            "/data/local/tmp",
+        };
+        for (const char* dir : dbg_dirs) {
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            std::ofstream dump(std::string(dir) + "/bachata-argv.txt", std::ios::app);
+            if (dump) {
+                dump << dbg_args;
+            }
+        }
+        std::ofstream cwd_dump("bachata-argv.txt", std::ios::app);
+        if (cwd_dump) {
+            cwd_dump << dbg_args;
+        }
     }
 
     // Android always supplies an absolute eboot path. Reject malformed content before
