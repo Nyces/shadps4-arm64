@@ -110,15 +110,21 @@ SafBrokerClient& SafBrokerClient::operator=(SafBrokerClient&& other) noexcept {
 }
 
 #ifdef __linux__
-bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
-                               std::vector<u8>& payload, int& out_fd) const {
+bool SafBrokerClient::RawTransact(u8 opcode, std::string_view path, bool want_fd, int& stage,
+                                  u8& out_status, u8& out_flags, std::vector<u8>& payload,
+                                  int& out_fd) const {
+    stage = 0;
+    out_status = 0;
+    out_flags = 0;
     out_fd = -1;
     if (!IsValid()) {
+        stage = 6;
         return false;
     }
 
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd < 0) {
+        stage = 1;
         return false;
     }
 
@@ -132,6 +138,7 @@ bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
 
     if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), addr_len) != 0) {
         ::close(fd);
+        stage = 2;
         return false;
     }
 
@@ -147,6 +154,7 @@ bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
 
     if (!SendAll(fd, req.data(), req.size())) {
         ::close(fd);
+        stage = 3;
         return false;
     }
 
@@ -164,6 +172,7 @@ bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
         const ssize_t n = ::recvmsg(fd, &msg, 0);
         if (n < static_cast<ssize_t>(sizeof(header))) {
             ::close(fd);
+            stage = 4;
             return false;
         }
         for (cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg != nullptr;
@@ -177,18 +186,23 @@ bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
     } else {
         if (!RecvAll(fd, header, sizeof(header))) {
             ::close(fd);
+            stage = 4;
             return false;
         }
     }
 
-    if (ReadBe32(header) != SAF_MAGIC || header[4] != 1) {
+    if (ReadBe32(header) != SAF_MAGIC) {
         if (out_fd >= 0) {
             ::close(out_fd);
             out_fd = -1;
         }
         ::close(fd);
+        stage = 5;
         return false;
     }
+
+    out_status = header[4];
+    out_flags = header[5];
 
     const u32 length = ReadBe32(header + 6);
     if (length > SAF_MAX_PAYLOAD) {
@@ -197,6 +211,7 @@ bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
             out_fd = -1;
         }
         ::close(fd);
+        stage = 7;
         return false;
     }
 
@@ -207,15 +222,56 @@ bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
             out_fd = -1;
         }
         ::close(fd);
+        stage = 4;
         return false;
     }
 
     ::close(fd);
     return true;
 }
+
+bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
+                               std::vector<u8>& payload, int& out_fd) const {
+    int stage = 0;
+    u8 status = 0;
+    u8 flags = 0;
+    if (!RawTransact(opcode, path, want_fd, stage, status, flags, payload, out_fd)) {
+        return false;
+    }
+    if (status != 1) {
+        if (out_fd >= 0) {
+            ::close(out_fd);
+            out_fd = -1;
+        }
+        return false;
+    }
+    return true;
+}
+
+bool SafBrokerClient::Probe(u8 opcode, std::string_view guest_path, int& stage, u8& status,
+                            u8& flags, std::vector<u8>& payload) const {
+    int fd = -1;
+    const bool ok = RawTransact(opcode, guest_path, false, stage, status, flags, payload, fd);
+    if (fd >= 0) {
+        ::close(fd);
+    }
+    return ok;
+}
 #else
+bool SafBrokerClient::RawTransact(u8, std::string_view, bool, int& stage, u8&, u8&,
+                                  std::vector<u8>&, int& out_fd) const {
+    stage = 1;
+    out_fd = -1;
+    return false;
+}
+
 bool SafBrokerClient::Transact(u8, std::string_view, bool, std::vector<u8>&, int& out_fd) const {
     out_fd = -1;
+    return false;
+}
+
+bool SafBrokerClient::Probe(u8, std::string_view, int& stage, u8&, u8&, std::vector<u8>&) const {
+    stage = 1;
     return false;
 }
 #endif

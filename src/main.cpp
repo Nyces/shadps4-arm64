@@ -8,6 +8,7 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <vector>
 #include <CLI/CLI.hpp>
 #include <SDL3/SDL_messagebox.h>
@@ -382,70 +383,97 @@ int main(int argc, char* argv[]) {
         *gamePath = (*overrideRoot / *gamePath).string();
     }
 
-    // Content can come from the direct runtime folder or the SAF broker. Validate that an
-    // executable eboot is reachable before IPC, settings, SDL or X11 initialization can block
-    // the managed session, otherwise the frontend hangs waiting for a runtime event.
     bool bachata_content_validated = false;
-    if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
-        const std::filesystem::path early_eboot_path(*gamePath);
-        if (!BachataContentReachable(overrideRoot.value_or(std::filesystem::path{}),
-                                     early_eboot_path)) {
-            std::cerr << "Invalid PS4 executable: " << early_eboot_path << '\n';
-            runtime_client.SendError("CONTENT_INVALID");
-            runtime_client.SendStopped(1);
-            return 1;
-        }
-        bachata_content_validated = true;
-    }
-
     {
         std::string dbg_args = "DBGARGS\n";
         std::error_code ec;
         dbg_args += "cwd\n";
         dbg_args += std::filesystem::current_path(ec).string();
-        dbg_args += '\n';
-        dbg_args += "override_root\n";
+        dbg_args += "\noverride_root\n";
         dbg_args += overrideRoot.has_value() ? overrideRoot->string() : std::string{"<none>"};
-        dbg_args += '\n';
+        dbg_args += "\ngame\n";
+        dbg_args += gamePath.has_value() ? *gamePath : std::string{"<none>"};
+        dbg_args += "\nargv\n";
         for (int i = 0; i < argc; ++i) {
             dbg_args += argv[i];
             dbg_args += '\n';
         }
         dbg_args += "----\n";
+
         if (overrideRoot.has_value()) {
-            dbg_args += "override_root_listing\n";
-            std::error_code lec;
-            for (const auto& entry : std::filesystem::directory_iterator(*overrideRoot, lec)) {
-                dbg_args += entry.path().filename().string();
-                dbg_args += entry.is_directory(lec) ? "/\n" : "\n";
+            // Bounded recursive listing so a nested eboot layout is visible.
+            dbg_args += "override_root_tree\n";
+            std::vector<std::pair<std::filesystem::path, int>> stack{{*overrideRoot, 0}};
+            while (!stack.empty()) {
+                const auto [dir, depth] = stack.back();
+                stack.pop_back();
+                if (depth > 3) {
+                    continue;
+                }
+                std::error_code lec;
+                for (const auto& entry : std::filesystem::directory_iterator(dir, lec)) {
+                    for (int i = 0; i < depth; ++i) {
+                        dbg_args += "  ";
+                    }
+                    dbg_args += entry.path().filename().string();
+                    const bool is_dir = entry.is_directory(lec);
+                    dbg_args += is_dir ? "/\n" : "\n";
+                    if (is_dir) {
+                        stack.emplace_back(entry.path(), depth + 1);
+                    }
+                }
             }
             dbg_args += "----\n";
             dbg_args += "direct_eboot\n";
             dbg_args += ((*overrideRoot / "eboot.bin").string());
             dbg_args += BachataIsElf(*overrideRoot / "eboot.bin") ? " elf\n" : " missing\n";
-        }
-        if (auto client = BachataSafClient()) {
-            dbg_args += "saf_probe\n";
-            Core::FileSys::SafEntry st{};
-            const char* probes[] = {"/app0", "/app0/eboot.bin", "/eboot.bin",
-                                    "/app0/sce_sys/param.sfo"};
-            for (const char* probe : probes) {
-                const bool ok = client->Stat(probe, st);
-                dbg_args += probe;
-                dbg_args += ok ? (st.is_directory ? " DIR size=" : " FILE size=") : " FAIL";
-                if (ok) {
-                    dbg_args += std::to_string(st.size);
-                }
-                dbg_args += '\n';
-            }
-            const auto mirror = std::filesystem::temp_directory_path() / "bachata-saf-probe";
-            Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
-            const auto resolved = backend.Resolve("/app0/eboot.bin");
-            dbg_args += "saf_resolved\n";
-            dbg_args += resolved.empty() ? std::string{"<none>"} : resolved.string();
-            dbg_args += '\n';
             dbg_args += "----\n";
         }
+
+        if (bachataStorageRoot.has_value()) {
+            dbg_args += "storage_root_tree\n";
+            std::error_code sec;
+            for (const auto& entry : std::filesystem::directory_iterator(*bachataStorageRoot, sec)) {
+                dbg_args += entry.path().filename().string();
+                dbg_args += entry.is_directory(sec) ? "/\n" : "\n";
+            }
+            dbg_args += "----\n";
+        }
+
+        if (auto client = BachataSafClient()) {
+            dbg_args += "saf_probe\n";
+            const char* probes[] = {"/app0",        "/app0/eboot.bin", "/eboot.bin",
+                                    "eboot.bin",    "/",               "/app0/sce_sys/param.sfo"};
+            for (const char* probe : probes) {
+                int stage = -1;
+                u8 status = 0;
+                u8 flags = 0;
+                std::vector<u8> payload;
+                const bool ok = client->Probe(1, probe, stage, status, flags, payload);
+                dbg_args += probe;
+                dbg_args += " stage=";
+                dbg_args += std::to_string(stage);
+                dbg_args += " status=";
+                dbg_args += std::to_string(status);
+                dbg_args += " flags=";
+                dbg_args += std::to_string(flags);
+                dbg_args += " len=";
+                dbg_args += std::to_string(payload.size());
+                dbg_args += ok ? " ok" : " transportfail";
+                dbg_args += '\n';
+            }
+            dbg_args += "----\n";
+        }
+
+        if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
+            bachata_content_validated =
+                BachataContentReachable(overrideRoot.value_or(std::filesystem::path{}),
+                                        std::filesystem::path(*gamePath));
+            dbg_args += "reachable\n";
+            dbg_args += bachata_content_validated ? "1\n" : "0\n";
+            dbg_args += "----\n";
+        }
+
         const char* dbg_dirs[] = {
             "/sdcard/Download",
             "/storage/emulated/0/Download",
@@ -464,6 +492,19 @@ int main(int argc, char* argv[]) {
         std::ofstream cwd_dump("bachata-argv.txt", std::ios::app);
         if (cwd_dump) {
             cwd_dump << dbg_args;
+        }
+    }
+
+    // Content can come from the direct runtime folder or the SAF broker. Validate that an
+    // executable eboot is reachable before IPC, settings, SDL or X11 initialization can block
+    // the managed session, otherwise the frontend hangs waiting for a runtime event.
+    if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
+        const std::filesystem::path early_eboot_path(*gamePath);
+        if (!bachata_content_validated) {
+            std::cerr << "Invalid PS4 executable: " << early_eboot_path << '\n';
+            runtime_client.SendError("CONTENT_INVALID");
+            runtime_client.SendStopped(1);
+            return 1;
         }
     }
 #endif
