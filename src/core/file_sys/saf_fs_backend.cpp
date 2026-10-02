@@ -7,6 +7,7 @@
 #include <utility>
 
 #ifdef __linux__
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -151,24 +152,33 @@ std::filesystem::path SafFsBackend::Resolve(std::string_view guest_path) {
     if (!client) {
         return {};
     }
-    SafEntry entry;
-    if (!client->Stat(rel, entry)) {
-        return {};
+    const int fd = AcquireFd(rel);
+    if (fd >= 0) {
+        // The broker fd is authoritative for the entry type, so probe it with fstat instead of
+        // guessing the stat payload field offsets.
+        bool is_dir = false;
+#ifdef __linux__
+        struct stat st{};
+        is_dir = ::fstat(fd, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+        if (is_dir) {
+            std::filesystem::create_directories(mirror, ec);
+            return ec ? std::filesystem::path{} : mirror;
+        }
+        std::filesystem::create_directories(mirror.parent_path(), ec);
+        std::filesystem::remove(mirror, ec);
+#ifdef __linux__
+        std::filesystem::create_symlink("/proc/self/fd/" + std::to_string(fd), mirror, ec);
+#endif
+        return ec ? std::filesystem::path{} : mirror;
     }
-    if (entry.is_directory) {
+    // Some brokers refuse to open directories; fall back to Stat for those.
+    SafEntry entry;
+    if (client->Stat(rel, entry) && entry.is_directory) {
         std::filesystem::create_directories(mirror, ec);
         return ec ? std::filesystem::path{} : mirror;
     }
-    const int fd = AcquireFd(rel);
-    if (fd < 0) {
-        return {};
-    }
-    std::filesystem::create_directories(mirror.parent_path(), ec);
-    std::filesystem::remove(mirror, ec);
-#ifdef __linux__
-    std::filesystem::create_symlink("/proc/self/fd/" + std::to_string(fd), mirror, ec);
-#endif
-    return ec ? std::filesystem::path{} : mirror;
+    return {};
 }
 
 bool SafFsBackend::Iterate(

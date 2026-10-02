@@ -43,6 +43,7 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 #include <ucontext.h>
 #include <cstdio>
 #include <cstring>
@@ -484,12 +485,67 @@ int main(int argc, char* argv[]) {
                 dbg_args += ok ? " ok" : " transportfail";
                 dbg_args += '\n';
             }
+            {
+                int stage = -1;
+                u8 status = 0;
+                u8 flags = 0;
+                std::vector<u8> payload;
+                client->Probe(1, "eboot.bin", stage, status, flags, payload);
+                dbg_args += "stat_eboot_hex=";
+                for (const u8 b : payload) {
+                    char h[3];
+                    std::snprintf(h, sizeof(h), "%02x", b);
+                    dbg_args += h;
+                }
+                dbg_args += '\n';
+            }
+#if defined(__linux__)
+            {
+                const int fd = client->Open("eboot.bin");
+                dbg_args += "open_eboot_fd=";
+                dbg_args += std::to_string(fd);
+                dbg_args += '\n';
+                if (fd >= 0) {
+                    struct stat st{};
+                    if (::fstat(fd, &st) == 0) {
+                        dbg_args += "fstat_size=";
+                        dbg_args += std::to_string(static_cast<long long>(st.st_size));
+                        dbg_args += " mode=";
+                        dbg_args += std::to_string(static_cast<unsigned>(st.st_mode));
+                        dbg_args += '\n';
+                    }
+                    u8 buf[16]{};
+                    const ssize_t n = ::pread(fd, buf, sizeof(buf), 0);
+                    dbg_args += "pread_n=";
+                    dbg_args += std::to_string(n);
+                    dbg_args += " hex=";
+                    for (ssize_t i = 0; i < n && i < 16; ++i) {
+                        char h[3];
+                        std::snprintf(h, sizeof(h), "%02x", buf[i]);
+                        dbg_args += h;
+                    }
+                    dbg_args += '\n';
+                    ::close(fd);
+                }
+            }
+#endif
             const auto mirror = Core::FileSys::SafMirrorRoot() / "probe";
             Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
             const auto resolved = backend.Resolve("/app0/eboot.bin");
             dbg_args += "saf_resolved\n";
             dbg_args += resolved.empty() ? std::string{"<none>"} : resolved.string();
             dbg_args += BachataIsElf(resolved) ? " elf\n" : " notelf\n";
+            if (!resolved.empty()) {
+                std::error_code rec;
+                dbg_args += "resolved_is_dir=";
+                dbg_args += std::filesystem::is_directory(resolved, rec) ? "1" : "0";
+                dbg_args += " is_symlink=";
+                dbg_args += std::filesystem::is_symlink(resolved) ? "1" : "0";
+                dbg_args += " target=";
+                const auto target = std::filesystem::read_symlink(resolved, rec);
+                dbg_args += rec ? std::string{"<err>"} : target.string();
+                dbg_args += '\n';
+            }
             dbg_args += "----\n";
         }
 
