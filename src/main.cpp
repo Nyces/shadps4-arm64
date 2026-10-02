@@ -197,13 +197,31 @@ std::shared_ptr<Core::FileSys::SafBrokerClient> BachataSafClient() {
                                                             Core::FileSys::g_saf_token);
 }
 
-bool BachataIsElf(const std::filesystem::path& path) {
-    if (path.empty() || !std::filesystem::exists(path)) {
+// A PS4 eboot is usually a SELF container (magic 4F 15 3D 1D) wrapping the real ELF, and
+// occasionally a bare ELF (7F 45 4C 46). Accept both so broker-delivered content is not
+// rejected merely for being a SELF; the loader decrypts SELF containers itself.
+bool BachataIsExecutable(const std::filesystem::path& path) {
+    if (path.empty()) {
         return false;
     }
-    Core::Loader::Elf probe;
-    probe.Open(path);
-    return probe.IsElfFile();
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+        return false;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return false;
+    }
+    unsigned char magic[4]{};
+    file.read(reinterpret_cast<char*>(magic), sizeof(magic));
+    if (file.gcount() != static_cast<std::streamsize>(sizeof(magic))) {
+        return false;
+    }
+    const bool is_elf =
+        magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
+    const bool is_self =
+        magic[0] == 0x4F && magic[1] == 0x15 && magic[2] == 0x3D && magic[3] == 0x1D;
+    return is_elf || is_self;
 }
 
 // The Android frontend can serve game content either from a real directory tree staged under
@@ -211,10 +229,10 @@ bool BachataIsElf(const std::filesystem::path& path) {
 // external storage. Returns true when an executable eboot is reachable from either source.
 bool BachataContentReachable(const std::filesystem::path& override_root,
                              const std::filesystem::path& direct_hint) {
-    if (BachataIsElf(direct_hint)) {
+    if (BachataIsExecutable(direct_hint)) {
         return true;
     }
-    if (!override_root.empty() && BachataIsElf(override_root / "eboot.bin")) {
+    if (!override_root.empty() && BachataIsExecutable(override_root / "eboot.bin")) {
         return true;
     }
     auto client = BachataSafClient();
@@ -223,7 +241,7 @@ bool BachataContentReachable(const std::filesystem::path& override_root,
     }
     const auto mirror = Core::FileSys::SafMirrorRoot() / "probe";
     Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
-    return BachataIsElf(backend.Resolve("/app0/eboot.bin"));
+    return BachataIsExecutable(backend.Resolve("/app0/eboot.bin"));
 }
 } // namespace
 #endif
@@ -429,7 +447,7 @@ int main(int argc, char* argv[]) {
             dbg_args += "----\n";
             dbg_args += "direct_eboot\n";
             dbg_args += ((*overrideRoot / "eboot.bin").string());
-            dbg_args += BachataIsElf(*overrideRoot / "eboot.bin") ? " elf\n" : " missing\n";
+            dbg_args += BachataIsExecutable(*overrideRoot / "eboot.bin") ? " exec\n" : " missing\n";
             dbg_args += "----\n";
         }
 
@@ -534,8 +552,46 @@ int main(int argc, char* argv[]) {
             const auto resolved = backend.Resolve("/app0/eboot.bin");
             dbg_args += "saf_resolved\n";
             dbg_args += resolved.empty() ? std::string{"<none>"} : resolved.string();
-            dbg_args += BachataIsElf(resolved) ? " elf\n" : " notelf\n";
+            dbg_args += BachataIsExecutable(resolved) ? " exec\n" : " notexec\n";
             if (!resolved.empty()) {
+                Core::Loader::Elf elf;
+                elf.Open(resolved);
+                const auto sh = elf.GetSElfHeader();
+                const auto eh = elf.GetElfHeader();
+                dbg_args += "loader_is_self=";
+                dbg_args += elf.IsSelfFile() ? "1" : "0";
+                dbg_args += " loader_is_elf=";
+                dbg_args += elf.IsElfFile() ? "1" : "0";
+                dbg_args += " self_magic=";
+                {
+                    char h[16];
+                    std::snprintf(h, sizeof(h), "%08x", sh.magic);
+                    dbg_args += h;
+                }
+                dbg_args += " ver=";
+                dbg_args += std::to_string(sh.version);
+                dbg_args += " mode=";
+                dbg_args += std::to_string(sh.mode);
+                dbg_args += " endian=";
+                dbg_args += std::to_string(sh.endian);
+                dbg_args += " attr=";
+                dbg_args += std::to_string(sh.attributes);
+                dbg_args += " cat=";
+                dbg_args += std::to_string(sh.category);
+                dbg_args += " ptype=";
+                dbg_args += std::to_string(sh.program_type);
+                dbg_args += " hdrsize=";
+                dbg_args += std::to_string(sh.header_size);
+                dbg_args += " segcount=";
+                dbg_args += std::to_string(sh.segment_count);
+                dbg_args += " elf_magic=";
+                {
+                    char h[16];
+                    std::snprintf(h, sizeof(h), "%02x%02x%02x%02x", eh.e_ident.magic[0],
+                                  eh.e_ident.magic[1], eh.e_ident.magic[2], eh.e_ident.magic[3]);
+                    dbg_args += h;
+                }
+                dbg_args += '\n';
                 std::error_code rec;
                 dbg_args += "resolved_is_dir=";
                 dbg_args += std::filesystem::is_directory(resolved, rec) ? "1" : "0";
@@ -544,6 +600,38 @@ int main(int argc, char* argv[]) {
                 dbg_args += " target=";
                 const auto target = std::filesystem::read_symlink(resolved, rec);
                 dbg_args += rec ? std::string{"<err>"} : target.string();
+                dbg_args += '\n';
+                std::ifstream head_file(resolved, std::ios::binary);
+                std::vector<unsigned char> head(0x2000);
+                head_file.read(reinterpret_cast<char*>(head.data()),
+                               static_cast<std::streamsize>(head.size()));
+                const auto got = head_file.gcount();
+                dbg_args += "head_len=";
+                dbg_args += std::to_string(got);
+                dbg_args += " head32=";
+                for (std::streamsize i = 0; i < 32 && i < got; ++i) {
+                    char h[3];
+                    std::snprintf(h, sizeof(h), "%02x", head[static_cast<size_t>(i)]);
+                    dbg_args += h;
+                }
+                long elf_off = -1;
+                for (std::streamsize i = 0; i + 4 <= got; ++i) {
+                    if (head[static_cast<size_t>(i)] == 0x7F &&
+                        head[static_cast<size_t>(i) + 1] == 'E' &&
+                        head[static_cast<size_t>(i) + 2] == 'L' &&
+                        head[static_cast<size_t>(i) + 3] == 'F') {
+                        elf_off = static_cast<long>(i);
+                        break;
+                    }
+                }
+                dbg_args += " elf_magic_off=";
+                dbg_args += std::to_string(elf_off);
+                if (got >= 26) {
+                    const unsigned seg = static_cast<unsigned>(head[24]) |
+                                         (static_cast<unsigned>(head[25]) << 8);
+                    dbg_args += " self_segcount=";
+                    dbg_args += std::to_string(seg);
+                }
                 dbg_args += '\n';
             }
             dbg_args += "----\n";
