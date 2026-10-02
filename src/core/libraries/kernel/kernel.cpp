@@ -260,6 +260,16 @@ void* PS4_SYSV_ABI sceKernelGetSanitizerNewReplaceExternal() {
     return nullptr;
 }
 
+// Sibling of the new-replacement hook above, for the malloc-replacement slot. Same contract: return
+// nullptr (no override) instead of ENOSYS(38). Love Live! School Idol Festival (CUSA24620) calls
+// this via libkernel NID py6L8jiVAN8 during init; the aerolib entry is only a STUB, so on the FEX
+// backend it fell back to UnsupportedHleCallAdapter returning ENOSYS(38), the guest treated 38 as a
+// function pointer and tripped an UNREACHABLE -> SIGTRAP -> exit 133.
+void* PS4_SYSV_ABI sceKernelGetSanitizerMallocReplaceExternal() {
+    LOG_TRACE(Kernel, "(STUBBED) sanitizer disabled, returning nullptr");
+    return nullptr;
+}
+
 s32 PS4_SYSV_ABI sceKernelGetAllowedSdkVersionOnSystem(s32* ver) {
     if (ver == nullptr) {
         return ORBIS_KERNEL_ERROR_EINVAL;
@@ -563,6 +573,8 @@ void RegisterLib(Core::Loader::SymbolsResolver* sym) {
     LIB_FUNCTION("WhCc1w3EhSI", "libkernel", 1, "libkernel", _sceKernelSetThreadAtexitReport);
     LIB_FUNCTION("bnZxYgAFeA0", "libkernel", 1, "libkernel",
                  sceKernelGetSanitizerNewReplaceExternal);
+    LIB_FUNCTION("py6L8jiVAN8", "libkernel", 1, "libkernel",
+                 sceKernelGetSanitizerMallocReplaceExternal);
 }
 
 } // namespace Libraries::Kernel
