@@ -14,6 +14,32 @@ namespace Core::FileSys {
 
 std::string g_saf_socket;
 std::string g_saf_token;
+std::filesystem::path g_saf_mirror_root;
+
+std::filesystem::path SafMirrorRoot() {
+    if (!g_saf_mirror_root.empty()) {
+        return g_saf_mirror_root;
+    }
+    std::error_code ec;
+    const auto tmp = std::filesystem::temp_directory_path(ec);
+    if (!ec && !tmp.empty()) {
+        const auto candidate = tmp / "bachata-saf";
+        std::filesystem::create_directories(candidate, ec);
+        if (!ec) {
+            return candidate;
+        }
+    }
+    ec.clear();
+    const auto cwd = std::filesystem::current_path(ec);
+    if (!ec && !cwd.empty()) {
+        const auto candidate = cwd / ".bachata-saf";
+        std::filesystem::create_directories(candidate, ec);
+        if (!ec) {
+            return candidate;
+        }
+    }
+    return std::filesystem::path{"/data/local/tmp/bachata-saf"};
+}
 
 SafFsBackend::SafFsBackend(std::shared_ptr<SafBrokerClient> c, std::string root,
                            std::filesystem::path mirror, std::filesystem::path fallback)
@@ -41,7 +67,7 @@ bool SafFsBackend::Matches(std::string_view guest_path) const {
     return guest_path.size() == guest_root.size() || guest_path[guest_root.size()] == '/';
 }
 
-std::filesystem::path SafFsBackend::MirrorPath(std::string_view guest_path) const {
+std::string SafFsBackend::RelativePath(std::string_view guest_path) const {
     std::string rel{guest_path};
     if (rel.size() >= guest_root.size()) {
         rel = rel.substr(guest_root.size());
@@ -49,6 +75,11 @@ std::filesystem::path SafFsBackend::MirrorPath(std::string_view guest_path) cons
     while (!rel.empty() && rel.front() == '/') {
         rel.erase(rel.begin());
     }
+    return rel;
+}
+
+std::filesystem::path SafFsBackend::MirrorPath(std::string_view guest_path) const {
+    const std::string rel = RelativePath(guest_path);
     if (rel.empty()) {
         return mirror_root;
     }
@@ -59,30 +90,24 @@ std::filesystem::path SafFsBackend::FallbackPath(std::string_view guest_path) co
     if (fallback_root.empty()) {
         return {};
     }
-    std::string rel{guest_path};
-    if (rel.size() >= guest_root.size()) {
-        rel = rel.substr(guest_root.size());
-    }
-    while (!rel.empty() && rel.front() == '/') {
-        rel.erase(rel.begin());
-    }
+    const std::string rel = RelativePath(guest_path);
     if (rel.empty()) {
         return fallback_root;
     }
     return fallback_root / rel;
 }
 
-int SafFsBackend::AcquireFd(const std::string& guest_path) {
+int SafFsBackend::AcquireFd(const std::string& broker_path) {
     std::scoped_lock lock{mutex};
-    if (const auto it = fd_cache.find(guest_path); it != fd_cache.end()) {
+    if (const auto it = fd_cache.find(broker_path); it != fd_cache.end()) {
         return it->second;
     }
-    const int fd = client->Open(guest_path);
+    const int fd = client->Open(broker_path);
     if (fd < 0) {
         return -1;
     }
-    fd_cache.emplace(guest_path, fd);
-    fd_order.push_back(guest_path);
+    fd_cache.emplace(broker_path, fd);
+    fd_order.push_back(broker_path);
     EvictLocked();
     return fd;
 }
@@ -114,19 +139,27 @@ std::filesystem::path SafFsBackend::Resolve(std::string_view guest_path) {
     if (!fallback.empty() && std::filesystem::exists(fallback, ec)) {
         return fallback;
     }
+    // The SAF broker addresses files relative to its own root (no /app0 prefix, no leading
+    // slash): /app0/sce_sys/param.sfo -> "sce_sys/param.sfo".
+    const std::string rel = RelativePath(guest_path);
+    const auto mirror = MirrorPath(guest_path);
+    if (rel.empty()) {
+        // Mount root: the mirror directory represents the broker root.
+        std::filesystem::create_directories(mirror, ec);
+        return ec ? std::filesystem::path{} : mirror;
+    }
     if (!client) {
         return {};
     }
     SafEntry entry;
-    if (!client->Stat(guest_path, entry)) {
+    if (!client->Stat(rel, entry)) {
         return {};
     }
-    const auto mirror = MirrorPath(guest_path);
     if (entry.is_directory) {
         std::filesystem::create_directories(mirror, ec);
         return ec ? std::filesystem::path{} : mirror;
     }
-    const int fd = AcquireFd(std::string{guest_path});
+    const int fd = AcquireFd(rel);
     if (fd < 0) {
         return {};
     }
@@ -155,8 +188,14 @@ bool SafFsBackend::Iterate(
     if (!client) {
         return false;
     }
+    const std::string rel = RelativePath(guest_path);
     std::vector<SafEntry> entries;
-    if (!client->ReadDir(guest_path, entries)) {
+    bool listed = client->ReadDir(rel, entries);
+    if (!listed && rel.empty()) {
+        // Some brokers spell the root as "." rather than the empty string.
+        listed = client->ReadDir(".", entries);
+    }
+    if (!listed) {
         return false;
     }
     for (const auto& entry : entries) {

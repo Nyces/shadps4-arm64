@@ -222,7 +222,7 @@ void Emulator::Run(std::filesystem::path file, std::vector<std::string> args,
     if (!Core::FileSys::g_saf_socket.empty() && !Core::FileSys::g_saf_token.empty()) {
         auto saf_client = std::make_shared<Core::FileSys::SafBrokerClient>(
             Core::FileSys::g_saf_socket, Core::FileSys::g_saf_token);
-        const auto mirror_root = std::filesystem::temp_directory_path() / "bachata-saf";
+        const auto mirror_root = Core::FileSys::SafMirrorRoot();
         mnt->MountSaf(std::make_shared<Core::FileSys::SafFsBackend>(saf_client, "/app0",
                                                                    mirror_root / "app0",
                                                                    game_folder),

@@ -19,6 +19,12 @@ namespace Core::FileSys {
 
 extern std::string g_saf_socket;
 extern std::string g_saf_token;
+// Writable directory used to stage fd symlinks. Android has no writable /tmp, so the frontend
+// points this at an app-private folder under --bachata-storage-root. Falls back to the
+// platform temp directory when empty.
+extern std::filesystem::path g_saf_mirror_root;
+
+std::filesystem::path SafMirrorRoot();
 
 class SafFsBackend {
 public:
@@ -37,10 +43,10 @@ public:
 
 private:
     std::filesystem::path MirrorPath(std::string_view guest_path) const;
-    int AcquireFd(const std::string& guest_path);
-    void EvictLocked();
-
     std::filesystem::path FallbackPath(std::string_view guest_path) const;
+    std::string RelativePath(std::string_view guest_path) const;
+    int AcquireFd(const std::string& broker_path);
+    void EvictLocked();
 
     std::shared_ptr<SafBrokerClient> client;
     std::string guest_root;

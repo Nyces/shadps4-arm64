@@ -220,7 +220,7 @@ bool BachataContentReachable(const std::filesystem::path& override_root,
     if (!client) {
         return false;
     }
-    const auto mirror = std::filesystem::temp_directory_path() / "bachata-saf-probe";
+    const auto mirror = Core::FileSys::SafMirrorRoot() / "probe";
     Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
     return BachataIsElf(backend.Resolve("/app0/eboot.bin"));
 }
@@ -356,6 +356,8 @@ int main(int argc, char* argv[]) {
         // The storage root drives the managed patch layout: patches/repository/<id> and
         // patches/session/<serial>.json both live under it.
         MemoryPatcher::g_managed_storage_root = *bachataStorageRoot;
+        // Android has no writable /tmp; stage SAF fd symlinks inside app-private storage.
+        Core::FileSys::g_saf_mirror_root = *bachataStorageRoot / "saf-mirror";
     }
     if (patchSessionPath.has_value()) {
         if (!bachataStorageRoot.has_value() ||
@@ -442,15 +444,15 @@ int main(int argc, char* argv[]) {
 
         if (auto client = BachataSafClient()) {
             dbg_args += "saf_probe\n";
-            const char* probes[] = {"/app0",        "/app0/eboot.bin", "/eboot.bin",
-                                    "eboot.bin",    "/",               "/app0/sce_sys/param.sfo"};
+            const char* probes[] = {"eboot.bin", "sce_sys/param.sfo", "sce_sys",
+                                    "",          ".",                "/app0/eboot.bin"};
             for (const char* probe : probes) {
                 int stage = -1;
                 u8 status = 0;
                 u8 flags = 0;
                 std::vector<u8> payload;
                 const bool ok = client->Probe(1, probe, stage, status, flags, payload);
-                dbg_args += probe;
+                dbg_args += probe[0] != '\0' ? probe : "<empty>";
                 dbg_args += " stage=";
                 dbg_args += std::to_string(stage);
                 dbg_args += " status=";
@@ -462,6 +464,32 @@ int main(int argc, char* argv[]) {
                 dbg_args += ok ? " ok" : " transportfail";
                 dbg_args += '\n';
             }
+            dbg_args += "saf_readdir\n";
+            const char* dirs[] = {"", ".", "sce_sys"};
+            for (const char* dir : dirs) {
+                int stage = -1;
+                u8 status = 0;
+                u8 flags = 0;
+                std::vector<u8> payload;
+                const bool ok = client->Probe(2, dir, stage, status, flags, payload);
+                dbg_args += dir[0] != '\0' ? dir : "<empty>";
+                dbg_args += " stage=";
+                dbg_args += std::to_string(stage);
+                dbg_args += " status=";
+                dbg_args += std::to_string(status);
+                dbg_args += " flags=";
+                dbg_args += std::to_string(flags);
+                dbg_args += " len=";
+                dbg_args += std::to_string(payload.size());
+                dbg_args += ok ? " ok" : " transportfail";
+                dbg_args += '\n';
+            }
+            const auto mirror = Core::FileSys::SafMirrorRoot() / "probe";
+            Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
+            const auto resolved = backend.Resolve("/app0/eboot.bin");
+            dbg_args += "saf_resolved\n";
+            dbg_args += resolved.empty() ? std::string{"<none>"} : resolved.string();
+            dbg_args += BachataIsElf(resolved) ? " elf\n" : " notelf\n";
             dbg_args += "----\n";
         }
 
