@@ -68,6 +68,13 @@ enum class SeekOrigin : u32 {
     End,             // Seeks from the end of the file.
 };
 
+// Optional hook letting a virtual filesystem layer (e.g. the Android SAF broker) hand back an
+// already-open read-only descriptor for a path it owns. Returning a negative value falls back to
+// a normal open. Broker-backed paths cannot be re-opened by path under scoped storage, so this
+// bypasses the path resolution that would otherwise be denied.
+using FdOpenHook = int (*)(const std::filesystem::path& path);
+void SetFdOpenHook(FdOpenHook hook);
+
 class IOFile final {
 public:
     IOFile();

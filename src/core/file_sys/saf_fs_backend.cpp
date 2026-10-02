@@ -42,6 +42,20 @@ std::filesystem::path SafMirrorRoot() {
     return std::filesystem::path{"/data/local/tmp/bachata-saf"};
 }
 
+namespace {
+std::mutex g_mirror_mutex;
+std::unordered_map<std::string, std::function<int()>> g_mirror_openers;
+} // namespace
+
+int OpenSafMirrorFd(const std::filesystem::path& path) {
+    std::scoped_lock lock{g_mirror_mutex};
+    const auto it = g_mirror_openers.find(path.string());
+    if (it == g_mirror_openers.end()) {
+        return -1;
+    }
+    return it->second();
+}
+
 SafFsBackend::SafFsBackend(std::shared_ptr<SafBrokerClient> c, std::string root,
                            std::filesystem::path mirror, std::filesystem::path fallback)
     : client(std::move(c)), guest_root(std::move(root)), mirror_root(std::move(mirror)),
@@ -170,7 +184,16 @@ std::filesystem::path SafFsBackend::Resolve(std::string_view guest_path) {
 #ifdef __linux__
         std::filesystem::create_symlink("/proc/self/fd/" + std::to_string(fd), mirror, ec);
 #endif
-        return ec ? std::filesystem::path{} : mirror;
+        if (ec) {
+            return {};
+        }
+        // Register a fresh-fd opener so IOFile can read broker content without re-opening the
+        // underlying path (denied under scoped storage).
+        if (client) {
+            std::scoped_lock lock{g_mirror_mutex};
+            g_mirror_openers[mirror.string()] = [c = client, r = rel] { return c->Open(r); };
+        }
+        return mirror;
     }
     // Some brokers refuse to open directories; fall back to Stat for those.
     SafEntry entry;

@@ -26,6 +26,10 @@ extern std::filesystem::path g_saf_mirror_root;
 
 std::filesystem::path SafMirrorRoot();
 
+// Fd hook implementation: returns a fresh read descriptor for a staged mirror path, or -1 when the
+// path is not SAF-backed. Installed into Common::FS so IOFile opens broker content directly.
+int OpenSafMirrorFd(const std::filesystem::path& path);
+
 class SafFsBackend {
 public:
     SafFsBackend(std::shared_ptr<SafBrokerClient> client, std::string guest_root,

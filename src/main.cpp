@@ -204,24 +204,9 @@ bool BachataIsExecutable(const std::filesystem::path& path) {
     if (path.empty()) {
         return false;
     }
-    std::error_code ec;
-    if (!std::filesystem::exists(path, ec)) {
-        return false;
-    }
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        return false;
-    }
-    unsigned char magic[4]{};
-    file.read(reinterpret_cast<char*>(magic), sizeof(magic));
-    if (file.gcount() != static_cast<std::streamsize>(sizeof(magic))) {
-        return false;
-    }
-    const bool is_elf =
-        magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
-    const bool is_self =
-        magic[0] == 0x4F && magic[1] == 0x15 && magic[2] == 0x3D && magic[3] == 0x1D;
-    return is_elf || is_self;
+    Core::Loader::Elf probe;
+    probe.Open(path);
+    return probe.IsSelfFile() || probe.IsElfFile();
 }
 
 // The Android frontend can serve game content either from a real directory tree staged under
@@ -393,6 +378,8 @@ int main(int argc, char* argv[]) {
     if (bachataSafSocket.has_value()) {
         Core::FileSys::g_saf_socket = *bachataSafSocket;
         Core::FileSys::g_saf_token = *bachataSafToken;
+        // Read broker-backed content through the broker fd instead of re-opening the path.
+        Common::FS::SetFdOpenHook(&Core::FileSys::OpenSafMirrorFd);
     }
 #endif
 
@@ -601,21 +588,23 @@ int main(int argc, char* argv[]) {
                 const auto target = std::filesystem::read_symlink(resolved, rec);
                 dbg_args += rec ? std::string{"<err>"} : target.string();
                 dbg_args += '\n';
-                std::ifstream head_file(resolved, std::ios::binary);
-                std::vector<unsigned char> head(0x2000);
-                head_file.read(reinterpret_cast<char*>(head.data()),
-                               static_cast<std::streamsize>(head.size()));
-                const auto got = head_file.gcount();
+                std::vector<unsigned char> head(0x2000, 0);
+                ssize_t got = 0;
+                const int hook_fd = Core::FileSys::OpenSafMirrorFd(resolved);
+                if (hook_fd >= 0) {
+                    got = ::pread(hook_fd, head.data(), head.size(), 0);
+                    ::close(hook_fd);
+                }
                 dbg_args += "head_len=";
                 dbg_args += std::to_string(got);
                 dbg_args += " head32=";
-                for (std::streamsize i = 0; i < 32 && i < got; ++i) {
+                for (ssize_t i = 0; i < 32 && i < got; ++i) {
                     char h[3];
                     std::snprintf(h, sizeof(h), "%02x", head[static_cast<size_t>(i)]);
                     dbg_args += h;
                 }
                 long elf_off = -1;
-                for (std::streamsize i = 0; i + 4 <= got; ++i) {
+                for (ssize_t i = 0; i + 4 <= got; ++i) {
                     if (head[static_cast<size_t>(i)] == 0x7F &&
                         head[static_cast<size_t>(i) + 1] == 'E' &&
                         head[static_cast<size_t>(i) + 2] == 'L' &&

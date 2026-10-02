@@ -31,6 +31,14 @@ namespace Common::FS {
 namespace fs = std::filesystem;
 
 namespace {
+FdOpenHook g_fd_open_hook = nullptr;
+}
+
+void SetFdOpenHook(FdOpenHook hook) {
+    g_fd_open_hook = hook;
+}
+
+namespace {
 
 #ifdef _WIN32
 
@@ -192,8 +200,21 @@ int IOFile::Open(const fs::path& path, FileAccessMode mode, FileType type, FileS
         result = _wfopen_s(&file, path.c_str(), AccessModeToWStr(mode, type));
     }
 #else
-    file = std::fopen(path.c_str(), AccessModeToStr(mode, type));
-    result = errno;
+    // Consult the fd hook first: broker-backed paths cannot be re-opened by path under scoped
+    // storage, so a virtual filesystem may supply an already-open read-only descriptor.
+    if (g_fd_open_hook != nullptr && mode == FileAccessMode::Read) {
+        const int hooked_fd = g_fd_open_hook(path);
+        if (hooked_fd >= 0) {
+            file = ::fdopen(hooked_fd, "rb");
+            if (file == nullptr) {
+                ::close(hooked_fd);
+            }
+        }
+    }
+    if (file == nullptr) {
+        file = std::fopen(path.c_str(), AccessModeToStr(mode, type));
+        result = errno;
+    }
 #endif
 
     if (!IsOpen()) {
