@@ -247,16 +247,6 @@ bool SafBrokerClient::Transact(u8 opcode, std::string_view path, bool want_fd,
     }
     return true;
 }
-
-bool SafBrokerClient::Probe(u8 opcode, std::string_view guest_path, int& stage, u8& status,
-                            u8& flags, std::vector<u8>& payload) const {
-    int fd = -1;
-    const bool ok = RawTransact(opcode, guest_path, false, stage, status, flags, payload, fd);
-    if (fd >= 0) {
-        ::close(fd);
-    }
-    return ok;
-}
 #else
 bool SafBrokerClient::RawTransact(u8, std::string_view, bool, int& stage, u8&, u8&,
                                   std::vector<u8>&, int& out_fd) const {
@@ -267,11 +257,6 @@ bool SafBrokerClient::RawTransact(u8, std::string_view, bool, int& stage, u8&, u
 
 bool SafBrokerClient::Transact(u8, std::string_view, bool, std::vector<u8>&, int& out_fd) const {
     out_fd = -1;
-    return false;
-}
-
-bool SafBrokerClient::Probe(u8, std::string_view, int& stage, u8&, u8&, std::vector<u8>&) const {
-    stage = 1;
     return false;
 }
 #endif

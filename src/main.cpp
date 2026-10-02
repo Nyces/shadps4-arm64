@@ -43,7 +43,6 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/syscall.h>
-#include <sys/stat.h>
 #include <ucontext.h>
 #include <cstdio>
 #include <cstring>
@@ -230,12 +229,26 @@ bool BachataContentReachable(const std::filesystem::path& override_root,
     Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
     return BachataIsExecutable(backend.Resolve("/app0/eboot.bin"));
 }
+
+// Android keeps shadPS4 logs in app-private storage, which is unreachable without root. Mirror the
+// log directory to a readable location and write crash dumps there too.
+constexpr const char* kBachataLogDir = "/sdcard/Download/bachata-logs";
+constexpr const char* kBachataCrashLog = "/sdcard/Download/bachata-logs/bachata-crash.txt";
+
+void BachataSetupReadableLogDir() {
+    std::error_code ec;
+    std::filesystem::create_directories(kBachataLogDir, ec);
+    if (ec) {
+        return;
+    }
+    Common::FS::SetUserPath(Common::FS::PathType::LogDir, kBachataLogDir);
+}
 } // namespace
 #endif
 
 #ifdef ENABLE_BACHATA_RUNTIME
 static void BachataCrashHandler(int signo, siginfo_t* info, void* uctx) {
-    const int fd = ::open("/sdcard/Download/bachata-crash.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    const int fd = ::open(kBachataCrashLog, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
         char hdr[160];
         const int len = ::snprintf(hdr, sizeof(hdr), "\n=== signal %d errno %d pid %d thread %ld ===\n",
@@ -268,6 +281,7 @@ int main(int argc, char* argv[]) {
     InstallBachataSigsysTrap();
 #ifdef ENABLE_BACHATA_RUNTIME
     InstallBachataCrashHandlers();
+    BachataSetupReadableLogDir();
 #endif
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
@@ -428,275 +442,15 @@ int main(int argc, char* argv[]) {
     }
 
     bool bachata_content_validated = false;
-    {
-        std::string dbg_args = "DBGARGS\n";
-        std::error_code ec;
-        dbg_args += "cwd\n";
-        dbg_args += std::filesystem::current_path(ec).string();
-        dbg_args += "\noverride_root\n";
-        dbg_args += overrideRoot.has_value() ? overrideRoot->string() : std::string{"<none>"};
-        dbg_args += "\ngame\n";
-        dbg_args += gamePath.has_value() ? *gamePath : std::string{"<none>"};
-        dbg_args += "\nargv\n";
-        for (int i = 0; i < argc; ++i) {
-            dbg_args += argv[i];
-            dbg_args += '\n';
-        }
-        dbg_args += "----\n";
-
-        if (overrideRoot.has_value()) {
-            // Bounded recursive listing so a nested eboot layout is visible.
-            dbg_args += "override_root_tree\n";
-            std::vector<std::pair<std::filesystem::path, int>> stack{{*overrideRoot, 0}};
-            while (!stack.empty()) {
-                const auto [dir, depth] = stack.back();
-                stack.pop_back();
-                if (depth > 3) {
-                    continue;
-                }
-                std::error_code lec;
-                for (const auto& entry : std::filesystem::directory_iterator(dir, lec)) {
-                    for (int i = 0; i < depth; ++i) {
-                        dbg_args += "  ";
-                    }
-                    dbg_args += entry.path().filename().string();
-                    const bool is_dir = entry.is_directory(lec);
-                    dbg_args += is_dir ? "/\n" : "\n";
-                    if (is_dir) {
-                        stack.emplace_back(entry.path(), depth + 1);
-                    }
-                }
-            }
-            dbg_args += "----\n";
-            dbg_args += "direct_eboot\n";
-            dbg_args += ((*overrideRoot / "eboot.bin").string());
-            dbg_args += BachataIsExecutable(*overrideRoot / "eboot.bin") ? " exec\n" : " missing\n";
-            dbg_args += "----\n";
-        }
-
-        if (bachataStorageRoot.has_value()) {
-            dbg_args += "storage_root_tree\n";
-            std::error_code sec;
-            for (const auto& entry : std::filesystem::directory_iterator(*bachataStorageRoot, sec)) {
-                dbg_args += entry.path().filename().string();
-                dbg_args += entry.is_directory(sec) ? "/\n" : "\n";
-            }
-            dbg_args += "----\n";
-        }
-
-        if (auto client = BachataSafClient()) {
-            dbg_args += "saf_probe\n";
-            const char* probes[] = {"eboot.bin", "sce_sys/param.sfo", "sce_sys",
-                                    "",          ".",                "/app0/eboot.bin"};
-            for (const char* probe : probes) {
-                int stage = -1;
-                u8 status = 0;
-                u8 flags = 0;
-                std::vector<u8> payload;
-                const bool ok = client->Probe(1, probe, stage, status, flags, payload);
-                dbg_args += probe[0] != '\0' ? probe : "<empty>";
-                dbg_args += " stage=";
-                dbg_args += std::to_string(stage);
-                dbg_args += " status=";
-                dbg_args += std::to_string(status);
-                dbg_args += " flags=";
-                dbg_args += std::to_string(flags);
-                dbg_args += " len=";
-                dbg_args += std::to_string(payload.size());
-                dbg_args += ok ? " ok" : " transportfail";
-                dbg_args += '\n';
-            }
-            dbg_args += "saf_readdir\n";
-            const char* dirs[] = {"", ".", "sce_sys"};
-            for (const char* dir : dirs) {
-                int stage = -1;
-                u8 status = 0;
-                u8 flags = 0;
-                std::vector<u8> payload;
-                const bool ok = client->Probe(2, dir, stage, status, flags, payload);
-                dbg_args += dir[0] != '\0' ? dir : "<empty>";
-                dbg_args += " stage=";
-                dbg_args += std::to_string(stage);
-                dbg_args += " status=";
-                dbg_args += std::to_string(status);
-                dbg_args += " flags=";
-                dbg_args += std::to_string(flags);
-                dbg_args += " len=";
-                dbg_args += std::to_string(payload.size());
-                dbg_args += ok ? " ok" : " transportfail";
-                dbg_args += '\n';
-            }
-            {
-                int stage = -1;
-                u8 status = 0;
-                u8 flags = 0;
-                std::vector<u8> payload;
-                client->Probe(1, "eboot.bin", stage, status, flags, payload);
-                dbg_args += "stat_eboot_hex=";
-                for (const u8 b : payload) {
-                    char h[3];
-                    std::snprintf(h, sizeof(h), "%02x", b);
-                    dbg_args += h;
-                }
-                dbg_args += '\n';
-            }
-#if defined(__linux__)
-            {
-                const int fd = client->Open("eboot.bin");
-                dbg_args += "open_eboot_fd=";
-                dbg_args += std::to_string(fd);
-                dbg_args += '\n';
-                if (fd >= 0) {
-                    struct stat st{};
-                    if (::fstat(fd, &st) == 0) {
-                        dbg_args += "fstat_size=";
-                        dbg_args += std::to_string(static_cast<long long>(st.st_size));
-                        dbg_args += " mode=";
-                        dbg_args += std::to_string(static_cast<unsigned>(st.st_mode));
-                        dbg_args += '\n';
-                    }
-                    u8 buf[16]{};
-                    const ssize_t n = ::pread(fd, buf, sizeof(buf), 0);
-                    dbg_args += "pread_n=";
-                    dbg_args += std::to_string(n);
-                    dbg_args += " hex=";
-                    for (ssize_t i = 0; i < n && i < 16; ++i) {
-                        char h[3];
-                        std::snprintf(h, sizeof(h), "%02x", buf[i]);
-                        dbg_args += h;
-                    }
-                    dbg_args += '\n';
-                    ::close(fd);
-                }
-            }
-#endif
-            const auto mirror = Core::FileSys::SafMirrorRoot() / "probe";
-            Core::FileSys::SafFsBackend backend(client, "/app0", mirror);
-            const auto resolved = backend.Resolve("/app0/eboot.bin");
-            dbg_args += "saf_resolved\n";
-            dbg_args += resolved.empty() ? std::string{"<none>"} : resolved.string();
-            dbg_args += BachataIsExecutable(resolved) ? " exec\n" : " notexec\n";
-            if (!resolved.empty()) {
-                Core::Loader::Elf elf;
-                elf.Open(resolved);
-                const auto sh = elf.GetSElfHeader();
-                const auto eh = elf.GetElfHeader();
-                dbg_args += "loader_is_self=";
-                dbg_args += elf.IsSelfFile() ? "1" : "0";
-                dbg_args += " loader_is_elf=";
-                dbg_args += elf.IsElfFile() ? "1" : "0";
-                dbg_args += " self_magic=";
-                {
-                    char h[16];
-                    std::snprintf(h, sizeof(h), "%08x", sh.magic);
-                    dbg_args += h;
-                }
-                dbg_args += " ver=";
-                dbg_args += std::to_string(sh.version);
-                dbg_args += " mode=";
-                dbg_args += std::to_string(sh.mode);
-                dbg_args += " endian=";
-                dbg_args += std::to_string(sh.endian);
-                dbg_args += " attr=";
-                dbg_args += std::to_string(sh.attributes);
-                dbg_args += " cat=";
-                dbg_args += std::to_string(sh.category);
-                dbg_args += " ptype=";
-                dbg_args += std::to_string(sh.program_type);
-                dbg_args += " hdrsize=";
-                dbg_args += std::to_string(sh.header_size);
-                dbg_args += " segcount=";
-                dbg_args += std::to_string(sh.segment_count);
-                dbg_args += " elf_magic=";
-                {
-                    char h[16];
-                    std::snprintf(h, sizeof(h), "%02x%02x%02x%02x", eh.e_ident.magic[0],
-                                  eh.e_ident.magic[1], eh.e_ident.magic[2], eh.e_ident.magic[3]);
-                    dbg_args += h;
-                }
-                dbg_args += '\n';
-                std::error_code rec;
-                dbg_args += "resolved_is_dir=";
-                dbg_args += std::filesystem::is_directory(resolved, rec) ? "1" : "0";
-                dbg_args += " is_symlink=";
-                dbg_args += std::filesystem::is_symlink(resolved) ? "1" : "0";
-                dbg_args += " target=";
-                const auto target = std::filesystem::read_symlink(resolved, rec);
-                dbg_args += rec ? std::string{"<err>"} : target.string();
-                dbg_args += '\n';
-                std::vector<unsigned char> head(0x2000, 0);
-                ssize_t got = 0;
-                const int hook_fd = Core::FileSys::OpenSafMirrorFd(resolved);
-                if (hook_fd >= 0) {
-                    got = ::pread(hook_fd, head.data(), head.size(), 0);
-                    ::close(hook_fd);
-                }
-                dbg_args += "head_len=";
-                dbg_args += std::to_string(got);
-                dbg_args += " head32=";
-                for (ssize_t i = 0; i < 32 && i < got; ++i) {
-                    char h[3];
-                    std::snprintf(h, sizeof(h), "%02x", head[static_cast<size_t>(i)]);
-                    dbg_args += h;
-                }
-                long elf_off = -1;
-                for (ssize_t i = 0; i + 4 <= got; ++i) {
-                    if (head[static_cast<size_t>(i)] == 0x7F &&
-                        head[static_cast<size_t>(i) + 1] == 'E' &&
-                        head[static_cast<size_t>(i) + 2] == 'L' &&
-                        head[static_cast<size_t>(i) + 3] == 'F') {
-                        elf_off = static_cast<long>(i);
-                        break;
-                    }
-                }
-                dbg_args += " elf_magic_off=";
-                dbg_args += std::to_string(elf_off);
-                if (got >= 26) {
-                    const unsigned seg = static_cast<unsigned>(head[24]) |
-                                         (static_cast<unsigned>(head[25]) << 8);
-                    dbg_args += " self_segcount=";
-                    dbg_args += std::to_string(seg);
-                }
-                dbg_args += '\n';
-            }
-            dbg_args += "----\n";
-        }
-
-        if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
-            bachata_content_validated =
-                BachataContentReachable(overrideRoot.value_or(std::filesystem::path{}),
-                                        std::filesystem::path(*gamePath));
-            dbg_args += "reachable\n";
-            dbg_args += bachata_content_validated ? "1\n" : "0\n";
-            dbg_args += "----\n";
-        }
-
-        const char* dbg_dirs[] = {
-            "/sdcard/Download",
-            "/storage/emulated/0/Download",
-            "/sdcard/Android/data/com.bachatas4.android.github/files",
-            "/storage/emulated/0/Android/data/com.bachatas4.android.github/files",
-            "/data/local/tmp",
-        };
-        for (const char* dir : dbg_dirs) {
-            std::error_code dec;
-            std::filesystem::create_directories(dir, dec);
-            std::ofstream dump(std::string(dir) + "/bachata-argv.txt", std::ios::app);
-            if (dump) {
-                dump << dbg_args;
-            }
-        }
-        std::ofstream cwd_dump("bachata-argv.txt", std::ios::app);
-        if (cwd_dump) {
-            cwd_dump << dbg_args;
-        }
-    }
 
     // Content can come from the direct runtime folder or the SAF broker. Validate that an
-    // executable eboot is reachable before IPC, settings, SDL or X11 initialization can block
-    // the managed session, otherwise the frontend hangs waiting for a runtime event.
+    // executable eboot is reachable before IPC, settings, SDL or X11 initialization can block the
+    // managed session, otherwise the frontend hangs waiting for a runtime event.
     if (gamePath.has_value() && std::filesystem::path(*gamePath).is_absolute()) {
         const std::filesystem::path early_eboot_path(*gamePath);
+        bachata_content_validated =
+            BachataContentReachable(overrideRoot.value_or(std::filesystem::path{}),
+                                    early_eboot_path);
         if (!bachata_content_validated) {
             std::cerr << "Invalid PS4 executable: " << early_eboot_path << '\n';
             runtime_client.SendError("CONTENT_INVALID");
@@ -708,19 +462,6 @@ int main(int argc, char* argv[]) {
 
     if (waitPid)
         Core::Debugger::WaitForPid(*waitPid);
-
-#ifdef ENABLE_BACHATA_RUNTIME
-    // Android keeps logs in app-private storage that is unreachable without root. Redirect the log
-    // directory to a readable location so a crash can be diagnosed from the device.
-    {
-        std::error_code lec;
-        const std::filesystem::path readable_logs{"/sdcard/Download/bachata-logs"};
-        std::filesystem::create_directories(readable_logs, lec);
-        if (!lec) {
-            Common::FS::SetUserPath(Common::FS::PathType::LogDir, readable_logs);
-        }
-    }
-#endif
 
     // Initialize main log with default config
     Common::Log::Setup("shadps4.log");

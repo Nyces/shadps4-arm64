@@ -37,13 +37,6 @@ public:
     bool ReadDir(std::string_view guest_path, std::vector<SafEntry>& out) const;
     int Open(std::string_view guest_path) const;
 
-    // Diagnostic probe: performs a raw transaction and reports the transport stage plus the
-    // raw response status/flags, so a caller can tell a protocol mismatch apart from a path
-    // error. stage: 0 = response received, 1 = socket() failed, 2 = connect() failed,
-    // 3 = send failed, 4 = recv failed, 5 = bad magic, 6 = invalid client, 7 = oversized reply.
-    bool Probe(u8 opcode, std::string_view guest_path, int& stage, u8& status, u8& flags,
-               std::vector<u8>& payload) const;
-
 private:
     bool RawTransact(u8 opcode, std::string_view path, bool want_fd, int& stage, u8& out_status,
                      u8& out_flags, std::vector<u8>& payload, int& out_fd) const;
