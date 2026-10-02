@@ -145,7 +145,9 @@ void SetIcon(u32 slot_id, void* buf, size_t buf_size) {
         }
         if (fs::exists(src_icon)) {
             fs::create_directories(icon_path.parent_path());
-            fs::copy_file(src_icon, icon_path);
+            // Copy through IOFile: the source is served by the SAF broker and cannot be re-opened
+            // by path under scoped storage (std::filesystem::copy_file would fail with EACCES).
+            Common::FS::CopyFileContents(src_icon, icon_path);
         }
     } else {
         IOFile file(icon_path, Common::FS::FileAccessMode::Create);

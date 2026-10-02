@@ -46,15 +46,23 @@ static const std::unordered_map<int, std::string> default_title = {
 
 namespace Libraries::SaveData {
 
+std::filesystem::path g_save_root_override;
+
+std::filesystem::path GetSaveRoot() {
+    if (!g_save_root_override.empty()) {
+        return g_save_root_override;
+    }
+    return EmulatorSettings.GetHomeDir();
+}
+
 fs::path SaveInstance::MakeTitleSavePath(Libraries::UserService::OrbisUserServiceUserId user_id,
                                          std::string_view game_serial) {
-    return EmulatorSettings.GetHomeDir() / std::to_string(user_id) / "savedata" / game_serial;
+    return GetSaveRoot() / std::to_string(user_id) / "savedata" / game_serial;
 }
 
 fs::path SaveInstance::MakeDirSavePath(OrbisUserServiceUserId user_id, std::string_view game_serial,
                                        std::string_view dir_name) {
-    return EmulatorSettings.GetHomeDir() / std::to_string(user_id) / "savedata" / game_serial /
-           dir_name;
+    return GetSaveRoot() / std::to_string(user_id) / "savedata" / game_serial / dir_name;
 }
 
 uint64_t SaveInstance::GetMaxBlockFromSFO(const PSF& psf) {
@@ -157,7 +165,9 @@ void SaveInstance::SetupAndMount(bool read_only, bool copy_icon, bool ignore_cor
                 if (fs::exists(output_icon)) {
                     fs::remove(output_icon);
                 }
-                fs::copy_file(src_icon, output_icon);
+                // Copy through IOFile so a SAF-broker-backed source is read via its descriptor
+                // rather than re-opened by path (denied under scoped storage).
+                Common::FS::CopyFileContents(src_icon, output_icon);
             }
         }
         exists = true;

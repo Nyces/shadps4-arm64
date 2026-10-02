@@ -23,6 +23,7 @@
 #include "core/emulator_state.h"
 #include "core/file_sys/fs.h"
 #include "core/file_sys/saf_fs_backend.h"
+#include "core/libraries/save_data/save_instance.h"
 #include "core/ipc/ipc.h"
 #include "core/loader/elf.h"
 #include "core/user_settings.h"
@@ -243,6 +244,19 @@ void BachataSetupReadableLogDir() {
     }
     Common::FS::SetUserPath(Common::FS::PathType::LogDir, kBachataLogDir);
 }
+
+// Save data is stored under an app-private home directory by default, which the frontend can only
+// export/open. Relocate it to a user-visible folder under /sdcard/Download so it can be inspected,
+// backed up or deleted directly.
+constexpr const char* kBachataSaveDir = "/sdcard/Download/BachataS4/saves";
+
+void BachataSetupSaveLocation() {
+    std::error_code ec;
+    std::filesystem::create_directories(kBachataSaveDir, ec);
+    if (!ec) {
+        Libraries::SaveData::g_save_root_override = kBachataSaveDir;
+    }
+}
 } // namespace
 #endif
 
@@ -282,6 +296,7 @@ int main(int argc, char* argv[]) {
 #ifdef ENABLE_BACHATA_RUNTIME
     InstallBachataCrashHandlers();
     BachataSetupReadableLogDir();
+    BachataSetupSaveLocation();
 #endif
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);

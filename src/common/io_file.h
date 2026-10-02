@@ -75,6 +75,12 @@ enum class SeekOrigin : u32 {
 using FdOpenHook = int (*)(const std::filesystem::path& path);
 void SetFdOpenHook(FdOpenHook hook);
 
+// Copies a file's contents through IOFile. This matters for paths served by a virtual filesystem
+// (e.g. the Android SAF broker): std::filesystem::copy_file re-opens the source by path, which
+// scoped storage denies, whereas IOFile consults the fd hook above. Returns false on any failure.
+bool CopyFileContents(const std::filesystem::path& source,
+                      const std::filesystem::path& destination);
+
 class IOFile final {
 public:
     IOFile();

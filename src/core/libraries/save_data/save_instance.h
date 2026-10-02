@@ -33,6 +33,12 @@ constexpr std::string_view TITLE_ID = "TITLE_ID";
 
 using OrbisUserServiceUserId = s32;
 
+// Overridable root under which the per-user "savedata" trees live. Empty means "use the emulator
+// home directory" (upstream behaviour). The Android build points it at a user-visible folder so
+// saves can be inspected, backed up or deleted outside the app.
+extern std::filesystem::path g_save_root_override;
+std::filesystem::path GetSaveRoot();
+
 class SaveInstance {
     int slot_num{};
     int user_id{};

@@ -38,6 +38,37 @@ void SetFdOpenHook(FdOpenHook hook) {
     g_fd_open_hook = hook;
 }
 
+bool CopyFileContents(const fs::path& source, const fs::path& destination) {
+    IOFile in{source, FileAccessMode::Read};
+    if (!in.IsOpen()) {
+        return false;
+    }
+    std::error_code ec;
+    if (!destination.parent_path().empty()) {
+        std::filesystem::create_directories(destination.parent_path(), ec);
+    }
+    IOFile out{destination, FileAccessMode::Create};
+    if (!out.IsOpen()) {
+        return false;
+    }
+    std::vector<u8> buffer(64 * 1024);
+    u64 remaining = in.GetSize();
+    in.Seek(0, SeekOrigin::SetOrigin);
+    while (remaining > 0) {
+        const size_t chunk =
+            remaining < buffer.size() ? static_cast<size_t>(remaining) : buffer.size();
+        if (in.ReadRaw<u8>(buffer.data(), chunk) != chunk) {
+            return false;
+        }
+        if (out.WriteRaw<u8>(buffer.data(), chunk) != chunk) {
+            return false;
+        }
+        remaining -= chunk;
+    }
+    out.Flush();
+    return true;
+}
+
 namespace {
 
 #ifdef _WIN32
