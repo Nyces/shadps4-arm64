@@ -47,6 +47,8 @@
 #include <ucontext.h>
 #include <cstdio>
 #include <cstring>
+#include <execinfo.h>
+#include <fcntl.h>
 #ifndef SYS_SECCOMP
 #define SYS_SECCOMP 1
 #endif
@@ -231,8 +233,42 @@ bool BachataContentReachable(const std::filesystem::path& override_root,
 } // namespace
 #endif
 
+#ifdef ENABLE_BACHATA_RUNTIME
+static void BachataCrashHandler(int signo, siginfo_t* info, void* uctx) {
+    const int fd = ::open("/sdcard/Download/bachata-crash.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd >= 0) {
+        char hdr[160];
+        const int len = ::snprintf(hdr, sizeof(hdr), "\n=== signal %d errno %d pid %d thread %ld ===\n",
+                                   signo, info != nullptr ? info->si_errno : 0,
+                                   static_cast<int>(::getpid()), static_cast<long>(::syscall(SYS_gettid)));
+        if (len > 0) {
+            ::write(fd, hdr, static_cast<size_t>(len));
+        }
+        void* frames[64];
+        const int count = ::backtrace(frames, 64);
+        ::backtrace_symbols_fd(frames, count, fd);
+        ::close(fd);
+    }
+    signal(signo, SIG_DFL);
+    raise(signo);
+}
+
+static void InstallBachataCrashHandlers() {
+    struct sigaction sa{};
+    sa.sa_sigaction = BachataCrashHandler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    for (const int sig : {SIGTRAP, SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE}) {
+        sigaction(sig, &sa, nullptr);
+    }
+}
+#endif
+
 int main(int argc, char* argv[]) {
     InstallBachataSigsysTrap();
+#ifdef ENABLE_BACHATA_RUNTIME
+    InstallBachataCrashHandlers();
+#endif
 #ifdef _WIN32
     SetConsoleOutputCP(CP_UTF8);
 #endif
@@ -672,6 +708,19 @@ int main(int argc, char* argv[]) {
 
     if (waitPid)
         Core::Debugger::WaitForPid(*waitPid);
+
+#ifdef ENABLE_BACHATA_RUNTIME
+    // Android keeps logs in app-private storage that is unreachable without root. Redirect the log
+    // directory to a readable location so a crash can be diagnosed from the device.
+    {
+        std::error_code lec;
+        const std::filesystem::path readable_logs{"/sdcard/Download/bachata-logs"};
+        std::filesystem::create_directories(readable_logs, lec);
+        if (!lec) {
+            Common::FS::SetUserPath(Common::FS::PathType::LogDir, readable_logs);
+        }
+    }
+#endif
 
     // Initialize main log with default config
     Common::Log::Setup("shadps4.log");
